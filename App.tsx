@@ -40,12 +40,31 @@ const App: React.FC = () => {
   const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null);
   const [progress, setProgress] = useState<number>(0);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [apiKey, setApiKey] = useState<string>("");
+  const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false);
+  const [apiKeyInput, setApiKeyInput] = useState<string>("");
 
   const batchInputRef = useRef<HTMLInputElement>(null);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
+  };
+
+  const handleSaveApiKey = () => {
+    if (apiKeyInput.trim()) {
+      localStorage.setItem('comic_api_key', apiKeyInput.trim());
+      setApiKey(apiKeyInput.trim());
+      setShowApiKeyModal(false);
+      showToast("API Key 已保存", "success");
+    }
+  };
+
+  const handleClearApiKey = () => {
+    localStorage.removeItem('comic_api_key');
+    setApiKey("");
+    setApiKeyInput("");
+    showToast("API Key 已清除", "success");
   };
 
   // 本地存储持久化 - 读取
@@ -65,6 +84,8 @@ const App: React.FC = () => {
         console.error("无法加载存档数据", e);
       }
     }
+    const savedApiKey = localStorage.getItem('comic_api_key');
+    if (savedApiKey) setApiKey(savedApiKey);
   }, []);
 
   // 本地存储持久化 - 写入
@@ -161,6 +182,11 @@ const App: React.FC = () => {
   };
 
   const startGeneration = async () => {
+    if (!apiKey.trim()) {
+      setApiKeyInput("");
+      setShowApiKeyModal(true);
+      return showToast("请先配置 API Key", "error");
+    }
     if (!script.trim()) return showToast("请先输入剧本内容！", "error");
     if (status === GenerationStatus.GENERATING) return;
     setStatus(GenerationStatus.ANALYZING);
@@ -185,8 +211,8 @@ const App: React.FC = () => {
         const p = skeletonPanels[i];
         setProgress(10 + ((i + 1) / skeletonPanels.length) * 90);
         const panelChars = characters.filter(c => p.characterNames.includes(c.name));
-        // 使用 2 张变体
-        const variations = await generatePanelImage(p.prompt, analysis.visual_style, panelChars, prevImage, 2);
+        // 初始生成 1 张图片
+        const variations = await generatePanelImage(p.prompt, analysis.visual_style, panelChars, prevImage, 1);
         setPanels(prev => prev.map(fp => {
           if (fp.id === p.id) return { ...fp, imageUrl: variations[0] || null, variations, isGenerating: false };
           return fp;
@@ -209,8 +235,8 @@ const App: React.FC = () => {
       const panelChars = characters.filter(c => targetPanel.characterNames.includes(c.name));
       const idx = panels.indexOf(targetPanel);
       const prevImage = idx > 0 ? panels[idx - 1].imageUrl : null;
-      // 使用 2 张变体
-      const variations = await generatePanelImage(customPrompt || targetPanel.prompt, detectedStyle || "经典漫画", panelChars, prevImage, 2);
+      // 生成 1 张图片
+      const variations = await generatePanelImage(customPrompt || targetPanel.prompt, detectedStyle || "经典漫画", panelChars, prevImage, 1);
       setPanels(prev => prev.map(p => {
         if (p.id === panelId) {
           return { 
@@ -263,11 +289,50 @@ const App: React.FC = () => {
       
       {toast && (
         <div className={`fixed top-6 left-1/2 -translate-x-1/2 z-[100] px-6 py-3 rounded-xl shadow-2xl border flex items-center gap-3 animate-bounce
-          ${toast.type === 'error' ? 'bg-red-950 border-red-800 text-red-200' : 
-            toast.type === 'success' ? 'bg-emerald-950 border-emerald-800 text-emerald-200' : 
+          ${toast.type === 'error' ? 'bg-red-950 border-red-800 text-red-200' :
+            toast.type === 'success' ? 'bg-emerald-950 border-emerald-800 text-emerald-200' :
             'bg-blue-950 border-blue-800 text-blue-200'}`}>
           {toast.type === 'error' ? <AlertCircle className="w-5 h-5" /> : <CheckCircle2 className="w-5 h-5" />}
           <span className="font-medium text-sm">{toast.message}</span>
+        </div>
+      )}
+
+      {showApiKeyModal && (
+        <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-8 w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                <Settings className="w-5 h-5 text-purple-500" />
+                API Key 设置
+              </h3>
+              <button onClick={() => setShowApiKeyModal(false)} className="p-1 hover:bg-zinc-800 rounded-lg text-zinc-500 transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm font-bold text-zinc-400 uppercase tracking-wider block mb-2">第三方 API Key</label>
+                <input
+                  type="password"
+                  value={apiKeyInput}
+                  onChange={(e) => setApiKeyInput(e.target.value)}
+                  placeholder="请输入 API Key"
+                  className="w-full bg-zinc-950 border border-zinc-700 rounded-xl p-3 text-white text-sm focus:border-purple-500 outline-none transition-all"
+                />
+                <p className="text-xs text-zinc-500 mt-2">API Key 将存储在本地浏览器中</p>
+              </div>
+              <div className="flex gap-3">
+                <button onClick={handleSaveApiKey} className="flex-1 py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 rounded-xl font-bold text-white transition-all">
+                  保存
+                </button>
+                {apiKey && (
+                  <button onClick={handleClearApiKey} className="py-3 px-6 bg-zinc-800 hover:bg-zinc-700 rounded-xl font-bold text-red-400 transition-all">
+                    清除
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -289,10 +354,15 @@ const App: React.FC = () => {
       {/* 侧边控制面板 */}
       <aside className="w-[380px] border-r border-zinc-800 bg-zinc-900/40 backdrop-blur-xl flex flex-col custom-scrollbar overflow-y-auto z-10">
         <div className="p-6 border-b border-zinc-800">
-          <h1 className="text-2xl font-black text-white italic tracking-tighter comic-font flex items-center gap-2">
-            <Zap className="text-yellow-400 fill-yellow-400 w-6 h-6" />
-            AI 漫画创作室 <span className="text-purple-500">PRO</span>
-          </h1>
+          <div className="flex items-center justify-between">
+            <h1 className="text-2xl font-black text-white italic tracking-tighter comic-font flex items-center gap-2">
+              <Zap className="text-yellow-400 fill-yellow-400 w-6 h-6" />
+              AI 漫画创作室 <span className="text-purple-500">PRO</span>
+            </h1>
+            <button onClick={() => { setApiKeyInput(apiKey); setShowApiKeyModal(true); }} className={`p-2 hover:bg-zinc-800 rounded-lg transition-all flex items-center gap-2 ${apiKey ? 'text-green-400' : 'text-zinc-500 hover:text-white'}`} title="API Key 设置">
+              <Settings className="w-5 h-5" />
+            </button>
+          </div>
           <p className="text-xs text-zinc-500 mt-1 uppercase font-bold tracking-widest">大师创作版</p>
         </div>
 
@@ -427,7 +497,7 @@ const App: React.FC = () => {
 
         <footer className="h-12 border-t border-zinc-900 bg-zinc-950 flex items-center justify-between px-8">
            <div className="flex items-center gap-4 text-[10px] font-bold uppercase tracking-widest text-zinc-600">
-              <span className="flex items-center gap-2"><div className={`w-2 h-2 rounded-full ${status === GenerationStatus.IDLE ? 'bg-zinc-700' : 'bg-green-500'}`} />API: 已连接</span>
+              <span className="flex items-center gap-2"><div className={`w-2 h-2 rounded-full ${apiKey ? 'bg-green-500' : 'bg-red-500'}`} />API: {apiKey ? '已配置' : '未配置'}</span>
               <span className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-500" />模型: GEMINI 2.5 FLASH IMAGE</span>
            </div>
            <div className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest">AI COMIC STUDIO PRO • CREATIVE TOOL</div>
@@ -489,8 +559,8 @@ const App: React.FC = () => {
                     </section>
 
                     <section>
-                      <h3 className="text-xs font-black text-zinc-500 uppercase tracking-widest mb-6">变体库 (2 选 1)</h3>
-                      <div className="grid grid-cols-2 gap-4">
+                      <h3 className="text-xs font-black text-zinc-500 uppercase tracking-widest mb-6">变体库</h3>
+                      <div className="grid grid-cols-1 gap-4">
                         {panel.variations.map((v, i) => (
                           <div key={i} onClick={() => setPanels(prev => prev.map(p => p.id === panel.id ? { ...p, imageUrl: v } : p))} className={`aspect-square rounded-2xl overflow-hidden border-2 cursor-pointer transition-all hover:scale-105 ${panel.imageUrl === v ? 'border-purple-500 ring-4 ring-purple-500/20' : 'border-zinc-800 opacity-60 hover:opacity-100'}`}>
                             <img src={v} className="w-full h-full object-cover" alt={`Variation ${i}`} loading="lazy" />
