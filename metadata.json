@@ -1,0 +1,7 @@
+{
+  "name": "Copy of AI Comic Studio Pro",
+  "description": "A high-end professional AI-powered comic creation suite. Transform scripts into stylized storyboards with character consistency and narrative flow using Gemini 2.5 Flash Image.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
