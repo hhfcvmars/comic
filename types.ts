@@ -23,7 +23,8 @@ export enum GenerationStatus {
   ANALYZING = 'analyzing',
   GENERATING = 'generating',
   COMPLETE = 'complete',
-  ERROR = 'error'
+  ERROR = 'error',
+  PAUSED = 'paused'
 }
 
 export interface ProjectState {
