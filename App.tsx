@@ -45,6 +45,7 @@ const App: React.FC = () => {
   const [apiKey, setApiKey] = useState<string>("");
   const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false);
   const [apiKeyInput, setApiKeyInput] = useState<string>("");
+  const [isLoaded, setIsLoaded] = useState<boolean>(false);
 
   const batchInputRef = useRef<HTMLInputElement>(null);
   const shouldStopGeneration = useRef<boolean>(false);
@@ -103,10 +104,12 @@ const App: React.FC = () => {
     }
     const savedApiKey = localStorage.getItem('comic_api_key');
     if (savedApiKey) setApiKey(savedApiKey);
+    setIsLoaded(true);
   }, []);
 
   // 本地存储持久化 - 写入
   useEffect(() => {
+    if (!isLoaded) return;
     try {
       const dataToSave = JSON.stringify({ script, frameCount, characters, panels, detectedStyle });
       localStorage.setItem('comic_studio_zh_v1', dataToSave);
