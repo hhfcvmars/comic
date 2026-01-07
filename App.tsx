@@ -78,6 +78,18 @@ const App: React.FC = () => {
     showToast("生成已暂停，正在等待当前任务完成...", "info");
   };
 
+  const handleClearTask = () => {
+    if (panels.length === 0) return;
+    if (window.confirm("确定要终止任务并清除所有生成的分镜和图片吗？此操作无法撤销。")) {
+      shouldStopGeneration.current = true;
+      setStatus(GenerationStatus.IDLE);
+      setPanels([]);
+      setLastError(null);
+      setProgress(0);
+      showToast("任务已清除", "success");
+    }
+  };
+
   // 本地存储持久化 - 读取
   useEffect(() => {
     const saved = localStorage.getItem('comic_studio_zh_v1');
@@ -582,6 +594,17 @@ const App: React.FC = () => {
               </div>
             ) : null}
 
+
+
+            {panels.length > 0 && (
+              <button
+                onClick={handleClearTask}
+                className="flex items-center gap-2 px-6 py-2.5 bg-zinc-800 hover:bg-zinc-700 hover:text-red-400 rounded-xl text-sm font-bold text-zinc-400 transition-all shadow-lg active:scale-95"
+                title="清除任务">
+                <Trash2 className="w-4 h-4" /> 清除
+              </button>
+            )}
+
             <div className="h-6 w-px bg-zinc-800"></div>
 
             <button
@@ -661,77 +684,79 @@ const App: React.FC = () => {
       </main>
 
       {/* 侧边编辑器 */}
-      {activePanelId && (
-        <div className="w-[450px] border-l border-zinc-800 bg-[#0c0c0e] flex flex-col z-40 animate-in slide-in-from-right duration-300 shadow-2xl overflow-y-auto custom-scrollbar">
-          <div className="h-20 border-b border-zinc-800 flex items-center justify-between px-8 flex-shrink-0">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-purple-600/20 flex items-center justify-center text-purple-500 font-black italic">E</div>
-              <h2 className="font-bold text-white uppercase tracking-tighter">分镜详情</h2>
+      {
+        activePanelId && (
+          <div className="w-[450px] border-l border-zinc-800 bg-[#0c0c0e] flex flex-col z-40 animate-in slide-in-from-right duration-300 shadow-2xl overflow-y-auto custom-scrollbar">
+            <div className="h-20 border-b border-zinc-800 flex items-center justify-between px-8 flex-shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-purple-600/20 flex items-center justify-center text-purple-500 font-black italic">E</div>
+                <h2 className="font-bold text-white uppercase tracking-tighter">分镜详情</h2>
+              </div>
+              <button onClick={() => setActivePanelId(null)} className="p-2 hover:bg-zinc-800 rounded-full text-zinc-500 transition-colors"><X className="w-5 h-5" /></button>
             </div>
-            <button onClick={() => setActivePanelId(null)} className="p-2 hover:bg-zinc-800 rounded-full text-zinc-500 transition-colors"><X className="w-5 h-5" /></button>
-          </div>
 
-          <div className="p-8 space-y-10">
-            {(() => {
-              const panel = panels.find(p => p.id === activePanelId);
-              if (!panel) return null;
-              return (
-                <>
-                  <section>
-                    <h3 className="text-xs font-black text-zinc-500 uppercase tracking-widest mb-4">分镜绑定的角色</h3>
-                    <div className="grid grid-cols-2 gap-3">
-                      {characters.map(char => {
-                        const isBound = panel.characterNames.includes(char.name);
-                        return (
-                          <button
-                            key={char.id}
-                            onClick={() => toggleCharacterInPanel(panel.id, char.name)}
-                            className={`flex items-center gap-3 p-3 rounded-xl border transition-all text-xs font-bold
+            <div className="p-8 space-y-10">
+              {(() => {
+                const panel = panels.find(p => p.id === activePanelId);
+                if (!panel) return null;
+                return (
+                  <>
+                    <section>
+                      <h3 className="text-xs font-black text-zinc-500 uppercase tracking-widest mb-4">分镜绑定的角色</h3>
+                      <div className="grid grid-cols-2 gap-3">
+                        {characters.map(char => {
+                          const isBound = panel.characterNames.includes(char.name);
+                          return (
+                            <button
+                              key={char.id}
+                              onClick={() => toggleCharacterInPanel(panel.id, char.name)}
+                              className={`flex items-center gap-3 p-3 rounded-xl border transition-all text-xs font-bold
                                 ${isBound ? 'bg-purple-600/10 border-purple-500/50 text-purple-400' : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:border-zinc-700'}`}>
-                            {isBound ? <UserCheck className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
-                            {char.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <p className="mt-3 text-[10px] text-zinc-500 leading-relaxed italic">提示：更改绑定的角色后，请点击下方“立即重绘”以应用更改。</p>
-                  </section>
+                              {isBound ? <UserCheck className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
+                              {char.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="mt-3 text-[10px] text-zinc-500 leading-relaxed italic">提示：更改绑定的角色后，请点击下方“立即重绘”以应用更改。</p>
+                    </section>
 
-                  <section>
-                    <h3 className="text-xs font-black text-zinc-500 uppercase tracking-widest mb-4">对应剧本</h3>
-                    <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 italic text-zinc-400 text-sm leading-relaxed">"{panel.scriptContent}"</div>
-                  </section>
+                    <section>
+                      <h3 className="text-xs font-black text-zinc-500 uppercase tracking-widest mb-4">对应剧本</h3>
+                      <div className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800 italic text-zinc-400 text-sm leading-relaxed">"{panel.scriptContent}"</div>
+                    </section>
 
-                  <section>
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-xs font-black text-zinc-500 uppercase tracking-widest">生图提示词 (Prompt)</h3>
-                      <button onClick={() => regeneratePanel(panel.id)} className="text-[10px] font-bold text-purple-400 hover:text-purple-300 uppercase underline">重置描述</button>
-                    </div>
-                    <textarea className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl p-5 text-sm text-white focus:border-purple-500 outline-none h-40 leading-relaxed transition-all" value={panel.prompt} onChange={(e) => setPanels(prev => prev.map(p => p.id === activePanelId ? { ...p, prompt: e.target.value } : p))} />
-                    <button disabled={panel.isGenerating} onClick={() => regeneratePanel(panel.id, panel.prompt)} className="w-full mt-4 py-4 bg-zinc-800 hover:bg-zinc-700 rounded-2xl text-sm font-black italic text-white flex items-center justify-center gap-3 transition-all active:scale-95 shadow-lg">
-                      {panel.isGenerating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4 text-purple-500" />}
-                      立即重绘此分镜
-                    </button>
-                  </section>
+                    <section>
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-xs font-black text-zinc-500 uppercase tracking-widest">生图提示词 (Prompt)</h3>
+                        <button onClick={() => regeneratePanel(panel.id)} className="text-[10px] font-bold text-purple-400 hover:text-purple-300 uppercase underline">重置描述</button>
+                      </div>
+                      <textarea className="w-full bg-zinc-900 border border-zinc-800 rounded-2xl p-5 text-sm text-white focus:border-purple-500 outline-none h-40 leading-relaxed transition-all" value={panel.prompt} onChange={(e) => setPanels(prev => prev.map(p => p.id === activePanelId ? { ...p, prompt: e.target.value } : p))} />
+                      <button disabled={panel.isGenerating} onClick={() => regeneratePanel(panel.id, panel.prompt)} className="w-full mt-4 py-4 bg-zinc-800 hover:bg-zinc-700 rounded-2xl text-sm font-black italic text-white flex items-center justify-center gap-3 transition-all active:scale-95 shadow-lg">
+                        {panel.isGenerating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4 text-purple-500" />}
+                        立即重绘此分镜
+                      </button>
+                    </section>
 
-                  <section>
-                    <h3 className="text-xs font-black text-zinc-500 uppercase tracking-widest mb-6">变体库</h3>
-                    <div className="grid grid-cols-1 gap-4">
-                      {panel.variations.map((v, i) => (
-                        <div key={i} onClick={() => setPanels(prev => prev.map(p => p.id === panel.id ? { ...p, imageUrl: v } : p))} className={`aspect-square rounded-2xl overflow-hidden border-2 cursor-pointer transition-all hover:scale-105 ${panel.imageUrl === v ? 'border-purple-500 ring-4 ring-purple-500/20' : 'border-zinc-800 opacity-60 hover:opacity-100'}`}>
-                          <img src={v} className="w-full h-full object-cover" alt={`Variation ${i}`} loading="lazy" />
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                </>
-              );
-            })()}
+                    <section>
+                      <h3 className="text-xs font-black text-zinc-500 uppercase tracking-widest mb-6">变体库</h3>
+                      <div className="grid grid-cols-1 gap-4">
+                        {panel.variations.map((v, i) => (
+                          <div key={i} onClick={() => setPanels(prev => prev.map(p => p.id === panel.id ? { ...p, imageUrl: v } : p))} className={`aspect-square rounded-2xl overflow-hidden border-2 cursor-pointer transition-all hover:scale-105 ${panel.imageUrl === v ? 'border-purple-500 ring-4 ring-purple-500/20' : 'border-zinc-800 opacity-60 hover:opacity-100'}`}>
+                            <img src={v} className="w-full h-full object-cover" alt={`Variation ${i}`} loading="lazy" />
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  </>
+                );
+              })()}
+            </div>
           </div>
-        </div>
-      )}
+        )
+      }
 
-    </div>
+    </div >
   );
 };
 
