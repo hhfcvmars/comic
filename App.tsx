@@ -51,10 +51,19 @@ const App: React.FC = () => {
   const [jimengAccessKeyIdInput, setJimengAccessKeyIdInput] = useState<string>("");
   const [jimengSecretAccessKeyInput, setJimengSecretAccessKeyInput] = useState<string>("");
   const [isLoaded, setIsLoaded] = useState<boolean>(false);
-  const [generationMode, setGenerationMode] = useState<ImageGenerationMode>(ImageGenerationMode.GEMINI);
+  const [generationMode, setGenerationMode] = useState<ImageGenerationMode>(ImageGenerationMode.JIMENG);
 
   const batchInputRef = useRef<HTMLInputElement>(null);
   const shouldStopGeneration = useRef<boolean>(false);
+  const generationAbortRef = useRef<AbortController | null>(null);
+
+  const cancelInFlightGeneration = () => {
+    try {
+      generationAbortRef.current?.abort();
+    } finally {
+      generationAbortRef.current = null;
+    }
+  };
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToast({ message, type });
@@ -107,6 +116,8 @@ const App: React.FC = () => {
     if (panels.length === 0) return;
     if (window.confirm("确定要终止任务并清除所有生成的分镜和图片吗？此操作无法撤销。")) {
       shouldStopGeneration.current = true;
+      // 关键：立刻取消正在进行中的 fetch 和即梦轮询（否则会继续打接口）
+      cancelInFlightGeneration();
       setStatus(GenerationStatus.IDLE);
       setPanels([]);
       setLastError(null);
@@ -315,7 +326,12 @@ const App: React.FC = () => {
     }));
   };
 
-  const processPanelGeneration = async (currentPanels: Panel[], startIndex: number, style: string) => {
+  const processPanelGeneration = async (
+    currentPanels: Panel[],
+    startIndex: number,
+    style: string,
+    signal?: AbortSignal
+  ) => {
     setStatus(GenerationStatus.GENERATING);
     shouldStopGeneration.current = false;
     let prevImage: string | null = null;
@@ -330,6 +346,10 @@ const App: React.FC = () => {
           setStatus(GenerationStatus.PAUSED);
           setLastError({ message: "已手动暂停生成", canResume: true });
           showToast("生成已暂停，可点击继续生成恢复", "info");
+          return;
+        }
+        if (signal?.aborted) {
+          // 清除/取消时静默退出，避免覆盖 UI 状态
           return;
         }
 
@@ -349,7 +369,15 @@ const App: React.FC = () => {
 
         try {
           const panelChars = characters.filter(c => p.characterNames.includes(c.name));
-          const variations = await generatePanelImageUnified(p.prompt, style, panelChars, prevImage, 1, generationMode);
+          const variations = await generatePanelImageUnified(
+            p.prompt,
+            style,
+            panelChars,
+            prevImage,
+            1,
+            generationMode,
+            signal
+          );
 
 
 
@@ -368,6 +396,9 @@ const App: React.FC = () => {
           currentPanels[i] = { ...currentPanels[i], imageUrl: newUrl, variations, isGenerating: false };
 
         } catch (err) {
+          if (signal?.aborted) {
+            return;
+          }
           console.error(`Panel ${i + 1} generation error:`, err);
           setPanels(prev => prev.map(fp => {
             if (fp.id === p.id) return { ...fp, isGenerating: false };
@@ -385,6 +416,9 @@ const App: React.FC = () => {
       setLastError(null);
       showToast("项目生成完成！", "success");
     } catch (error) {
+      if (signal?.aborted) {
+        return;
+      }
       // 兜底错误处理：只要有分镜数据，就尝试进入暂停状态，而不是直接报错结束
       if (currentPanels && currentPanels.length > 0) {
         setStatus(GenerationStatus.PAUSED);
@@ -419,7 +453,11 @@ const App: React.FC = () => {
     setProgress(5);
     setLastError(null);
     try {
-      const analysis = await analyzeScript(script, frameCount, characters);
+      cancelInFlightGeneration();
+      const controller = new AbortController();
+      generationAbortRef.current = controller;
+
+      const analysis = await analyzeScript(script, frameCount, characters, controller.signal);
       setDetectedStyle(analysis.visual_style);
       const skeletonPanels: Panel[] = analysis.panels.map((p: any, i: number) => ({
         id: Math.random().toString(36).substr(2, 9),
@@ -433,9 +471,13 @@ const App: React.FC = () => {
       }));
       setPanels(skeletonPanels);
 
-      await processPanelGeneration(skeletonPanels, 0, analysis.visual_style);
+      await processPanelGeneration(skeletonPanels, 0, analysis.visual_style, controller.signal);
 
     } catch (error) {
+      // 清除/取消触发的 Abort 不视为错误
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
       setStatus(GenerationStatus.ERROR);
       const errorMessage = error instanceof Error ? error.message : "生成失败";
       setLastError({ message: errorMessage, canResume: false });
@@ -453,7 +495,10 @@ const App: React.FC = () => {
       return showToast("所有分镜已完成", "success");
     }
     setLastError(null);
-    await processPanelGeneration([...panels], startIndex, detectedStyle);
+    cancelInFlightGeneration();
+    const controller = new AbortController();
+    generationAbortRef.current = controller;
+    await processPanelGeneration([...panels], startIndex, detectedStyle, controller.signal);
   };
 
   const regeneratePanel = async (panelId: string, customPrompt?: string) => {
@@ -461,11 +506,23 @@ const App: React.FC = () => {
     if (!targetPanel) return;
     setPanels(prev => prev.map(p => p.id === panelId ? { ...p, isGenerating: true } : p));
     try {
+      cancelInFlightGeneration();
+      const controller = new AbortController();
+      generationAbortRef.current = controller;
+
       const panelChars = characters.filter(c => targetPanel.characterNames.includes(c.name));
       const idx = panels.indexOf(targetPanel);
       const prevImage = idx > 0 ? panels[idx - 1].imageUrl : null;
       // 生成 1 张图片
-      const variations = await generatePanelImageUnified(customPrompt || targetPanel.prompt, detectedStyle || "经典漫画", panelChars, prevImage, 1, generationMode);
+      const variations = await generatePanelImageUnified(
+        customPrompt || targetPanel.prompt,
+        detectedStyle || "经典漫画",
+        panelChars,
+        prevImage,
+        1,
+        generationMode,
+        controller.signal
+      );
       setPanels(prev => prev.map(p => {
         if (p.id === panelId) {
           return {
@@ -480,6 +537,11 @@ const App: React.FC = () => {
       }));
       showToast("重绘成功", "success");
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        // 清除/取消时静默
+        setPanels(prev => prev.map(p => p.id === panelId ? { ...p, isGenerating: false } : p));
+        return;
+      }
       showToast("重绘失败", "error");
       setPanels(prev => prev.map(p => p.id === panelId ? { ...p, isGenerating: false } : p));
     }
@@ -773,6 +835,47 @@ const App: React.FC = () => {
           </div>
         )}
 
+        {/* 画布等待弹框：仅在“分析分镜结构”阶段显示，不影响后续逐张出图 */}
+        {status === GenerationStatus.ANALYZING && (
+          <div className="absolute inset-x-0 top-20 bottom-0 z-30 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <div className="w-full max-w-md mx-6 rounded-3xl border border-zinc-700/80 bg-zinc-900/80 shadow-2xl shadow-black/40 p-8">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-purple-600/15 border border-purple-500/20 flex items-center justify-center flex-shrink-0">
+                  <RefreshCw className="w-6 h-6 text-purple-400 animate-spin" />
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-lg font-black text-white tracking-tight">正在生成分镜</h3>
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                      {Math.round(Math.max(0, Math.min(100, progress)))}%
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm text-zinc-400 leading-relaxed">
+                    正在拆解剧情并生成分镜结构，请稍候…
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-6">
+                <div className="h-2 bg-zinc-800 rounded-full overflow-hidden border border-zinc-700/60">
+                  <div
+                    className="h-full bg-gradient-to-r from-purple-500 via-blue-500 to-purple-500 transition-all duration-700"
+                    style={{ width: `${Math.round(Math.max(0, Math.min(100, progress)))}%` }}
+                  />
+                </div>
+                <div className="mt-3 flex items-center justify-between text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                  <span>画布处理中</span>
+                  <span className="flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" style={{ animationDelay: "120ms" }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" style={{ animationDelay: "240ms" }} />
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto p-10 custom-scrollbar">
           {panels.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-zinc-700 space-y-4 opacity-50">
@@ -785,7 +888,7 @@ const App: React.FC = () => {
                 <div
                   key={panel.id}
                   onClick={() => setActivePanelId(panel.id)}
-                  className={`group relative aspect-[16/10] bg-zinc-900 rounded-[2rem] border-2 overflow-hidden cursor-pointer transition-all duration-300
+                  className={`group relative aspect-square bg-zinc-900 rounded-[2rem] border-2 overflow-hidden cursor-pointer transition-all duration-300
                       ${activePanelId === panel.id ? 'border-purple-500 shadow-2xl shadow-purple-900/20 scale-[1.02] z-20' : 'border-zinc-800 hover:border-zinc-700 shadow-md'}`}>
 
                   <div className="absolute top-6 left-6 z-30 bg-black/80 backdrop-blur rounded-xl px-4 py-1.5 border border-white/10 flex items-center gap-2">
@@ -799,7 +902,12 @@ const App: React.FC = () => {
                         <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">绘制中...</span>
                       </div>
                     ) : panel.imageUrl ? (
-                      <img src={panel.imageUrl} className="w-full h-full object-cover animate-in fade-in duration-700" alt={`Panel ${panel.index}`} loading="lazy" />
+                      <img
+                        src={panel.imageUrl}
+                        className="w-full h-full object-contain animate-in fade-in duration-700"
+                        alt={`Panel ${panel.index}`}
+                        loading="lazy"
+                      />
                     ) : (
                       <div className="absolute inset-0 flex items-center justify-center text-zinc-800"><ImageIcon className="w-20 h-20" /></div>
                     )}
@@ -900,7 +1008,7 @@ const App: React.FC = () => {
                       <div className="grid grid-cols-1 gap-4">
                         {panel.variations.map((v, i) => (
                           <div key={i} onClick={() => setPanels(prev => prev.map(p => p.id === panel.id ? { ...p, imageUrl: v } : p))} className={`aspect-square rounded-2xl overflow-hidden border-2 cursor-pointer transition-all hover:scale-105 ${panel.imageUrl === v ? 'border-purple-500 ring-4 ring-purple-500/20' : 'border-zinc-800 opacity-60 hover:opacity-100'}`}>
-                            <img src={v} className="w-full h-full object-cover" alt={`Variation ${i}`} loading="lazy" />
+                            <img src={v} className="w-full h-full object-contain bg-zinc-950" alt={`Variation ${i}`} loading="lazy" />
                           </div>
                         ))}
                       </div>

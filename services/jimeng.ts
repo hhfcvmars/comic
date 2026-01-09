@@ -30,6 +30,34 @@ const TASK_POLL_INTERVAL = 3000; // 轮询间隔（毫秒）
 const TASK_MAX_RETRIES = 60; // 最大重试次数（约2分钟）
 
 /**
+ * 可取消的 sleep，用于轮询间隔等待
+ */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    if (!signal) return;
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+/**
  * 获取即梦认证信息
  */
 const getJimengCredentials = (): { accessKeyId: string; secretAccessKey: string } => {
@@ -257,7 +285,8 @@ interface VolcengineGetResultResponse {
  */
 async function callJimengApi(
   action: string,
-  bodyParams: Record<string, unknown>
+  bodyParams: Record<string, unknown>,
+  signal?: AbortSignal
 ): Promise<VolcengineSubmitResponse | VolcengineGetResultResponse> {
   const { accessKeyId, secretAccessKey } = getJimengCredentials();
   
@@ -290,7 +319,8 @@ async function callJimengApi(
     const response = await fetch(requestUrl, {
       method: "POST",
       headers,
-      body: formattedBody
+      body: formattedBody,
+      signal
     });
     
     const responseText = await response.text();
@@ -306,6 +336,10 @@ async function callJimengApi(
     
     return JSON.parse(respStr);
   } catch (error) {
+    // 用户主动取消时，避免刷屏日志
+    if (isAbortError(error)) {
+      throw error;
+    }
     console.error("即梦 API 调用错误:", error);
     throw error;
   }
@@ -328,6 +362,7 @@ async function submitJimengTask(prompt: string, options: {
   seed?: number;
   image_urls?: string[]; // 图片URL数组，用于以图生图
   scale?: number; // 修改程度，0-1之间，默认0.5
+  signal?: AbortSignal;
 } = {}): Promise<string> {
   const bodyParams: Record<string, unknown> = {
     req_key: JIMENG_REQ_KEY,
@@ -367,7 +402,7 @@ async function submitJimengTask(prompt: string, options: {
     bodyParams.seed = options.seed || Math.floor(Math.random() * 999999);
   }
   
-  const result = await callJimengApi(JIMENG_ACTION_SUBMIT, bodyParams) as VolcengineSubmitResponse;
+  const result = await callJimengApi(JIMENG_ACTION_SUBMIT, bodyParams, options.signal) as VolcengineSubmitResponse;
   
   if (result.code !== 10000) {
     throw new Error(`即梦 API 错误 (${result.code}): ${result.message || "未知错误"}`);
@@ -390,7 +425,8 @@ async function submitJimengTask(prompt: string, options: {
  */
 async function getJimengTaskResult(
   taskId: string,
-  returnUrl: boolean = true
+  returnUrl: boolean = true,
+  signal?: AbortSignal
 ): Promise<VolcengineGetResultResponse> {
   const bodyParams: Record<string, unknown> = {
     req_key: JIMENG_REQ_KEY,
@@ -407,7 +443,11 @@ async function getJimengTaskResult(
     });
   }
   
-  const result = await callJimengApi(JIMENG_ACTION_GET_RESULT, bodyParams) as VolcengineGetResultResponse;
+  const result = await callJimengApi(
+    JIMENG_ACTION_GET_RESULT,
+    bodyParams,
+    signal
+  ) as VolcengineGetResultResponse;
   
   if (result.code !== 10000) {
     throw new Error(`即梦 API 查询错误 (${result.code}): ${result.message || "未知错误"}`);
@@ -424,13 +464,18 @@ async function getJimengTaskResult(
  */
 async function waitForJimengTask(
   taskId: string,
-  returnUrl: boolean = true
+  returnUrl: boolean = true,
+  signal?: AbortSignal
 ): Promise<string[]> {
   let retries = 0;
   
   while (retries < TASK_MAX_RETRIES) {
     try {
-      const result = await getJimengTaskResult(taskId, returnUrl);
+      if (signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+
+      const result = await getJimengTaskResult(taskId, returnUrl, signal);
       const status = result.data?.status;
       
       console.log(`即梦任务 ${taskId} 状态: ${status} (第 ${retries + 1} 次查询)`);
@@ -455,15 +500,19 @@ async function waitForJimengTask(
         throw new Error(`即梦任务失败: ${result.message || "未知错误"}`);
       } else if (status === "processing" || status === "running") {
         // 任务处理中，继续等待
-        await new Promise(resolve => setTimeout(resolve, TASK_POLL_INTERVAL));
+        await sleep(TASK_POLL_INTERVAL, signal);
         retries++;
       } else {
         // 未知状态，继续等待
         console.warn(`即梦任务未知状态: ${status}，继续等待...`);
-        await new Promise(resolve => setTimeout(resolve, TASK_POLL_INTERVAL));
+        await sleep(TASK_POLL_INTERVAL, signal);
         retries++;
       }
     } catch (error) {
+      // 取消：立刻退出轮询
+      if (isAbortError(error)) {
+        throw error;
+      }
       // 如果是明确的任务失败，直接抛出
       if (error instanceof Error && error.message.includes("失败")) {
         throw error;
@@ -476,7 +525,7 @@ async function waitForJimengTask(
         throw new Error(`即梦任务查询超时: ${error instanceof Error ? error.message : "未知错误"}`);
       }
       
-      await new Promise(resolve => setTimeout(resolve, TASK_POLL_INTERVAL));
+      await sleep(TASK_POLL_INTERVAL, signal);
       retries++;
     }
   }
@@ -495,17 +544,33 @@ export async function generatePanelImageWithJimeng(
   characters: Character[],
   contextImage: string | null = null,
   batchSize: number = 1,
-  scale: number = 0.5 // 以图生图时的修改程度，默认0.5
+  scale: number = 0.5, // 以图生图时的修改程度，默认0.5
+  signal?: AbortSignal
 ): Promise<string[]> {
   const bg = characters.length > 0 ? "纯白背景, 极简环境" : "精细真实环境场景";
+
+  // 提示词策略（核心）：用“角色设定卡 + 一致性约束 + 负面约束”降低人物漂移
+  // - 有参考图时：强调“参考图最高优先级”，让以图生图更锁定角色
+  // - 无参考图时：强调“同一角色外观完全一致”，并禁止模型随意新增显著特征
+  const hasAnyReferenceImage = characters.some((c) => !!c.referenceImage);
+  const charCards = characters
+    .map((c) => `【${c.name}】${c.description}`)
+    .join("；");
+
   let fullPrompt = `${style}漫画风格, ${bg}: ${prompt}. `;
-  
+
   if (characters.length > 0) {
-    const charInfo = characters.map((c) => `${c.name}(${c.description})`).join(", ");
-    fullPrompt += `角色特征: ${charInfo}. `;
+    fullPrompt += `角色设定卡: ${charCards}. `;
+    fullPrompt += "一致性要求：同一角色在不同分镜中外观必须完全一致（脸型、发型、发色、瞳色、肤色、体型、年龄、性别、服装与配饰保持不变）。";
+    fullPrompt += "禁止：随机换装、随机改发型/发色、随机增加/删除眼镜/饰品、改变年龄或性别、把角色画成不同人。";
+
+    if (hasAnyReferenceImage) {
+      fullPrompt += "重要：若提供了角色参考图/上一格参考图，请以参考图为最高优先级，严格还原角色外观。";
+    }
   }
 
-  fullPrompt += "画面必须干净、纯粹。构图清晰稳定, 线条准确, 无文字, 无对话框.";
+  fullPrompt += "画面必须干净、纯粹。严禁出现速度线、发光气场、烟雾装饰、冲击线、拟声词等任何装饰性漫画特效。";
+  fullPrompt += "构图清晰稳定, 线条准确, 无文字, 无对话框, 无水印, 不要新增无关路人或额外角色.";
 
   console.log("即梦生成提示词:", fullPrompt);
   console.log("角色列表:", characters.map(c => ({ name: c.name, hasReferenceImage: !!c.referenceImage })));
@@ -575,65 +640,91 @@ export async function generatePanelImageWithJimeng(
 
   const results: string[] = [];
 
-  // 提交所有任务
-  const taskIds: string[] = [];
-  for (let i = 0; i < batchSize; i++) {
+  // 任务调度策略：
+  // - 每次提交任务间隔至少 10 秒（避免过快触发风控/限流，也让服务端更稳定）
+  // - 同时在跑的任务最多 5 个（控制并发，避免一次性塞太多任务）
+  const START_NEXT_AFTER_MS = 10_000;
+  const MAX_CONCURRENT_TASKS = 5;
+
+  const runOneTask = async (index: number): Promise<{ index: number; images: string[] }> => {
     try {
       let taskId: string;
-      
+
       // 如果有参考图片（角色图片或 contextImage），使用以图生图模式
       if (imageUrls.length > 0) {
         // 以图生图模式
-        console.log(`========== 即梦任务 ${i + 1} 使用以图生图模式 ==========`);
+        console.log(`========== 即梦任务 ${index + 1} 使用以图生图模式 ==========`);
         console.log(`参考图片数量: ${imageUrls.length}`);
         console.log(`Scale: ${scale}`);
-        console.log(`图片URLs:`, imageUrls);
+        console.log("图片URLs:", imageUrls);
         taskId = await submitJimengTask(fullPrompt, {
           image_urls: imageUrls,
           scale: scale,
           width: 1024,
-          height: 1024
+          height: 1024,
+          signal
         });
       } else {
         // 文生图模式
-        console.log(`========== 即梦任务 ${i + 1} 使用文生图模式 ==========`);
+        console.log(`========== 即梦任务 ${index + 1} 使用文生图模式 ==========`);
         console.log("注意：没有收集到任何参考图片，将使用文生图模式");
         taskId = await submitJimengTask(fullPrompt, {
           width: 1024,
           height: 1024,
-          seed: Math.floor(Math.random() * 999999)
+          seed: Math.floor(Math.random() * 999999),
+          signal
         });
       }
-      
-      taskIds.push(taskId);
-      console.log(`即梦任务 ${i + 1} 已提交，task_id: ${taskId}`);
-    } catch (error) {
-      console.error(`即梦任务 ${i + 1} 提交失败:`, error);
-    }
-  }
 
-  if (taskIds.length === 0) {
-    throw new Error("即梦生成失败：所有任务提交都失败了");
-  }
-
-  // 等待所有任务完成
-  const taskPromises = taskIds.map(async (taskId, index) => {
-    try {
+      console.log(`即梦任务 ${index + 1} 已提交，task_id: ${taskId}`);
       console.log(`开始等待即梦任务 ${index + 1} (task_id: ${taskId}) 完成...`);
-      const imageData = await waitForJimengTask(taskId, true);
-      console.log(`即梦任务 ${index + 1} 完成，获得 ${imageData.length} 张图片`);
-      return imageData;
-    } catch (error) {
-      console.error(`即梦任务 ${index + 1} (task_id: ${taskId}) 失败:`, error);
-      return [];
-    }
-  });
 
-  // 并行等待所有任务
-  const allResults = await Promise.all(taskPromises);
-  
+      const imageData = await waitForJimengTask(taskId, true, signal);
+      console.log(`即梦任务 ${index + 1} 完成，获得 ${imageData.length} 张图片`);
+      return { index, images: imageData };
+    } catch (error) {
+      console.error(`即梦任务 ${index + 1} 失败:`, error);
+      return { index, images: [] };
+    }
+  };
+
+  const allTaskPromises: Array<Promise<{ index: number; images: string[] }>> = [];
+  const running: Array<Promise<{ index: number; images: string[] }>> = [];
+  let lastSubmitAt = 0;
+
+  const startTracked = (index: number) => {
+    const base = runOneTask(index);
+    let tracked: Promise<{ index: number; images: string[] }>;
+    tracked = base.finally(() => {
+      const idx = running.indexOf(tracked);
+      if (idx >= 0) running.splice(idx, 1);
+    });
+    running.push(tracked);
+    allTaskPromises.push(tracked);
+  };
+
+  for (let i = 0; i < batchSize; i++) {
+    // 并发控制：如果正在跑的任务达到上限，则等待任意一个完成再继续提交
+    while (running.length >= MAX_CONCURRENT_TASKS) {
+      await Promise.race(running);
+    }
+
+    // 提交节流：确保每次提交之间至少间隔 10 秒
+    const now = Date.now();
+    const waitMs = Math.max(0, lastSubmitAt + START_NEXT_AFTER_MS - now);
+    if (waitMs > 0) {
+      console.log(`提交节流：等待 ${(waitMs / 1000).toFixed(1)} 秒后提交下一张...`);
+      await sleep(waitMs, signal);
+    }
+
+    startTracked(i);
+    lastSubmitAt = Date.now();
+  }
+
+  const allResults = await Promise.all(allTaskPromises);
+
   // 直接返回图片URL，不进行下载转换或上传
-  for (const imageData of allResults.flat()) {
+  for (const imageData of allResults.flatMap((r) => r.images)) {
     if (imageData.startsWith("http://") || imageData.startsWith("https://")) {
       // 直接使用返回的URL
       results.push(imageData);

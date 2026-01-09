@@ -19,7 +19,12 @@ const getJimengApiKey = (): string | null => {
  * 使用 Gemini 3 Flash 分析原始剧本并将其分解为结构化的分镜。
  * 强化约束：严禁任何未指定的特效。
  */
-export async function analyzeScript(script: string, panelCount: number, characters: Character[]) {
+export async function analyzeScript(
+  script: string,
+  panelCount: number,
+  characters: Character[],
+  signal?: AbortSignal
+) {
   const apiKey = getApiKey();
   const charNames = characters.map(c => c.name).join(", ");
 
@@ -27,6 +32,7 @@ export async function analyzeScript(script: string, panelCount: number, characte
     `${BASE_URL}/gemini-3-flash-preview:generateContent?key=${apiKey}`,
     {
       method: "POST",
+      signal,
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`
@@ -95,7 +101,8 @@ export async function generatePanelImage(
   style: string,
   characters: Character[],
   contextImage: string | null = null,
-  batchSize: number = 2
+  batchSize: number = 2,
+  signal?: AbortSignal
 ) {
   const apiKey = getApiKey();
 
@@ -140,6 +147,7 @@ export async function generatePanelImage(
         `${BASE_URL}/gemini-2.5-flash-image-preview:generateContent?key=${apiKey}`,
         {
           method: "POST",
+          signal,
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${apiKey}`
@@ -193,13 +201,14 @@ export async function generatePanelImageUnified(
   characters: Character[],
   contextImage: string | null = null,
   batchSize: number = 2,
-  mode: 'gemini' | 'jimeng' = 'gemini'
+  mode: 'gemini' | 'jimeng' = 'gemini',
+  signal?: AbortSignal
 ): Promise<string[]> {
   // 动态导入即梦服务，避免未使用时的加载
   if (mode === 'jimeng') {
     const { generatePanelImageWithJimeng } = await import('./jimeng');
-    return generatePanelImageWithJimeng(prompt, style, characters, contextImage, batchSize);
+    return generatePanelImageWithJimeng(prompt, style, characters, contextImage, batchSize, 0.5, signal);
   } else {
-    return generatePanelImage(prompt, style, characters, contextImage, batchSize);
+    return generatePanelImage(prompt, style, characters, contextImage, batchSize, signal);
   }
 }
