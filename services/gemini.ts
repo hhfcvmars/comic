@@ -11,6 +11,10 @@ const getApiKey = (): string => {
   return apiKey;
 };
 
+const getJimengApiKey = (): string | null => {
+  return localStorage.getItem("jimeng_api_key");
+};
+
 /**
  * 使用 Gemini 3 Flash 分析原始剧本并将其分解为结构化的分镜。
  * 强化约束：严禁任何未指定的特效。
@@ -178,4 +182,24 @@ export async function generatePanelImage(
 
   const results = await Promise.all(generateRequests);
   return results.filter((img): img is string => img !== null);
+}
+
+/**
+ * 统一的图片生成接口，根据用户选择的模式调用不同的生成服务
+ */
+export async function generatePanelImageUnified(
+  prompt: string,
+  style: string,
+  characters: Character[],
+  contextImage: string | null = null,
+  batchSize: number = 2,
+  mode: 'gemini' | 'jimeng' = 'gemini'
+): Promise<string[]> {
+  // 动态导入即梦服务，避免未使用时的加载
+  if (mode === 'jimeng') {
+    const { generatePanelImageWithJimeng } = await import('./jimeng');
+    return generatePanelImageWithJimeng(prompt, style, characters, contextImage, batchSize);
+  } else {
+    return generatePanelImage(prompt, style, characters, contextImage, batchSize);
+  }
 }

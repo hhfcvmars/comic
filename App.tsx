@@ -24,8 +24,9 @@ import {
   Play
 } from 'lucide-react';
 import JSZip from 'jszip';
-import { Character, Panel, GenerationStatus } from './types';
-import { analyzeScript, generatePanelImage } from './services/gemini';
+import { Character, Panel, GenerationStatus, ImageGenerationMode } from './types';
+import { analyzeScript, generatePanelImageUnified } from './services/gemini';
+import { uploadToQiniu, uploadBase64ToQiniu } from './services/qiniu';
 
 const App: React.FC = () => {
   // 状态管理
@@ -45,7 +46,12 @@ const App: React.FC = () => {
   const [apiKey, setApiKey] = useState<string>("");
   const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false);
   const [apiKeyInput, setApiKeyInput] = useState<string>("");
+  const [jimengAccessKeyId, setJimengAccessKeyId] = useState<string>("");
+  const [jimengSecretAccessKey, setJimengSecretAccessKey] = useState<string>("");
+  const [jimengAccessKeyIdInput, setJimengAccessKeyIdInput] = useState<string>("");
+  const [jimengSecretAccessKeyInput, setJimengSecretAccessKeyInput] = useState<string>("");
   const [isLoaded, setIsLoaded] = useState<boolean>(false);
+  const [generationMode, setGenerationMode] = useState<ImageGenerationMode>(ImageGenerationMode.GEMINI);
 
   const batchInputRef = useRef<HTMLInputElement>(null);
   const shouldStopGeneration = useRef<boolean>(false);
@@ -59,9 +65,18 @@ const App: React.FC = () => {
     if (apiKeyInput.trim()) {
       localStorage.setItem('comic_api_key', apiKeyInput.trim());
       setApiKey(apiKeyInput.trim());
-      setShowApiKeyModal(false);
-      showToast("API Key 已保存", "success");
     }
+    if (jimengAccessKeyIdInput.trim()) {
+      localStorage.setItem('jimeng_access_key_id', jimengAccessKeyIdInput.trim());
+      setJimengAccessKeyId(jimengAccessKeyIdInput.trim());
+    }
+    if (jimengSecretAccessKeyInput.trim()) {
+      localStorage.setItem('jimeng_secret_access_key', jimengSecretAccessKeyInput.trim());
+      setJimengSecretAccessKey(jimengSecretAccessKeyInput.trim());
+    }
+    localStorage.setItem('generation_mode', generationMode);
+    setShowApiKeyModal(false);
+    showToast("设置已保存", "success");
   };
 
   const handleClearApiKey = () => {
@@ -69,6 +84,16 @@ const App: React.FC = () => {
     setApiKey("");
     setApiKeyInput("");
     showToast("API Key 已清除", "success");
+  };
+
+  const handleClearJimengApiKey = () => {
+    localStorage.removeItem('jimeng_access_key_id');
+    localStorage.removeItem('jimeng_secret_access_key');
+    setJimengAccessKeyId("");
+    setJimengSecretAccessKey("");
+    setJimengAccessKeyIdInput("");
+    setJimengSecretAccessKeyInput("");
+    showToast("即梦 API Key 已清除", "success");
   };
 
   const handlePauseGeneration = () => {
@@ -90,6 +115,11 @@ const App: React.FC = () => {
     }
   };
 
+  // 判断是否为URL（以http://或https://开头）
+  const isUrl = (str: string): boolean => {
+    return str.startsWith('http://') || str.startsWith('https://');
+  };
+
   // 本地存储持久化 - 读取
   useEffect(() => {
     const saved = localStorage.getItem('comic_studio_zh_v1');
@@ -100,7 +130,56 @@ const App: React.FC = () => {
           setScript(parsed.script || "");
           setFrameCount(parsed.frameCount || 5);
           setDetectedStyle(parsed.detectedStyle || "");
-          if (Array.isArray(parsed.characters)) setCharacters(parsed.characters);
+          if (Array.isArray(parsed.characters)) {
+            // 检查是否有base64格式的图片需要上传到七牛云
+            const charactersWithBase64 = parsed.characters.filter((char: Character) => 
+              char.referenceImage && !isUrl(char.referenceImage)
+            );
+            
+            // 先设置角色数据
+            setCharacters(parsed.characters);
+            
+            // 如果有base64格式的图片，异步上传到七牛云
+            if (charactersWithBase64.length > 0) {
+              // 延迟显示提示，避免在组件初始化时立即显示
+              setTimeout(() => {
+                showToast(`检测到 ${charactersWithBase64.length} 个角色图片，正在上传到七牛云...`, "info");
+              }, 500);
+              
+              // 异步上传base64图片到七牛云
+              Promise.all(
+                charactersWithBase64.map(async (char: Character) => {
+                  try {
+                    if (char.referenceImage && !isUrl(char.referenceImage)) {
+                      const imageUrl = await uploadBase64ToQiniu(char.referenceImage, `${char.name || 'character'}.png`);
+                      return { id: char.id, imageUrl };
+                    }
+                    return null;
+                  } catch (error) {
+                    console.error(`上传角色 ${char.name} 的图片失败:`, error);
+                    return null;
+                  }
+                })
+              ).then((uploadResults) => {
+                // 更新成功上传的角色图片
+                setCharacters(prev => prev.map((char: Character) => {
+                  const result = uploadResults.find((r) => r && r.id === char.id);
+                  if (result && result.imageUrl) {
+                    return { ...char, referenceImage: result.imageUrl };
+                  }
+                  return char;
+                }));
+                
+                const successCount = uploadResults.filter(r => r !== null).length;
+                if (successCount > 0) {
+                  showToast(`${successCount} 个角色图片已上传到七牛云`, "success");
+                }
+              }).catch((error) => {
+                console.error("批量上传角色图片失败:", error);
+                showToast("部分角色图片上传失败", "error");
+              });
+            }
+          }
           if (Array.isArray(parsed.panels)) {
             setPanels(parsed.panels);
             const hasIncomplete = parsed.panels.some((p: Panel) => !p.imageUrl);
@@ -116,6 +195,12 @@ const App: React.FC = () => {
     }
     const savedApiKey = localStorage.getItem('comic_api_key');
     if (savedApiKey) setApiKey(savedApiKey);
+    const savedJimengAccessKeyId = localStorage.getItem('jimeng_access_key_id');
+    if (savedJimengAccessKeyId) setJimengAccessKeyId(savedJimengAccessKeyId);
+    const savedJimengSecretAccessKey = localStorage.getItem('jimeng_secret_access_key');
+    if (savedJimengSecretAccessKey) setJimengSecretAccessKey(savedJimengSecretAccessKey);
+    const savedGenerationMode = localStorage.getItem('generation_mode');
+    if (savedGenerationMode) setGenerationMode(savedGenerationMode as ImageGenerationMode);
     setIsLoaded(true);
   }, []);
 
@@ -150,24 +235,24 @@ const App: React.FC = () => {
     if (!files || files.length === 0) return;
     const fileList = Array.from(files) as File[];
     try {
-      const results = await Promise.all(fileList.map((file: File) => {
-        return new Promise<Character | null>((resolve) => {
-          if (!file.type.startsWith('image/')) return resolve(null);
-          const reader = new FileReader();
-          reader.onload = (event) => {
-            const base64 = event.target?.result as string;
-            const name = file.name.split(/[\\/]/).pop()?.replace(/\.[^/.]+$/, "") || "未知角色";
-            resolve({
-              id: Math.random().toString(36).substr(2, 9),
-              name: name,
-              description: '',
-              seed: Math.floor(Math.random() * 99999),
-              referenceImage: base64
-            });
+      showToast("正在上传图片到七牛云...", "info");
+      const results = await Promise.all(fileList.map(async (file: File) => {
+        if (!file.type.startsWith('image/')) return null;
+        try {
+          // 上传到七牛云
+          const imageUrl = await uploadToQiniu(file);
+          const name = file.name.split(/[\\/]/).pop()?.replace(/\.[^/.]+$/, "") || "未知角色";
+          return {
+            id: Math.random().toString(36).substr(2, 9),
+            name: name,
+            description: '',
+            seed: Math.floor(Math.random() * 99999),
+            referenceImage: imageUrl
           };
-          reader.onerror = () => resolve(null);
-          reader.readAsDataURL(file);
-        });
+        } catch (error) {
+          console.error("上传失败:", error);
+          return null;
+        }
       }));
       const newCharacters = results.filter((c): c is Character => c !== null);
       if (newCharacters.length > 0) {
@@ -177,8 +262,11 @@ const App: React.FC = () => {
           return [...prev, ...filteredNew];
         });
         showToast(`成功导入 ${newCharacters.length} 个新角色`, "success");
+      } else {
+        showToast("导入失败，请检查图片格式", "error");
       }
     } catch (err) {
+      console.error("导入角色时发生错误", err);
       showToast("导入角色时发生错误", "error");
     } finally { e.target.value = ""; }
   };
@@ -199,12 +287,18 @@ const App: React.FC = () => {
     setCharacters(characters.map(c => c.id === id ? { ...c, ...updates } : c));
   };
 
-  const handleImageUpload = (id: string, e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (id: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => updateCharacter(id, { referenceImage: reader.result as string });
-      reader.readAsDataURL(file);
+      try {
+        showToast("正在上传图片到七牛云...", "info");
+        const imageUrl = await uploadToQiniu(file);
+        updateCharacter(id, { referenceImage: imageUrl });
+        showToast("图片上传成功", "success");
+      } catch (error) {
+        console.error("上传失败:", error);
+        showToast("图片上传失败，请重试", "error");
+      }
     }
   };
 
@@ -255,7 +349,7 @@ const App: React.FC = () => {
 
         try {
           const panelChars = characters.filter(c => p.characterNames.includes(c.name));
-          const variations = await generatePanelImage(p.prompt, style, panelChars, prevImage, 1);
+          const variations = await generatePanelImageUnified(p.prompt, style, panelChars, prevImage, 1, generationMode);
 
 
 
@@ -310,7 +404,13 @@ const App: React.FC = () => {
     if (!apiKey.trim()) {
       setApiKeyInput("");
       setShowApiKeyModal(true);
-      return showToast("请先配置 API Key", "error");
+      return showToast("请先配置 Gemini API Key", "error");
+    }
+    if (generationMode === ImageGenerationMode.JIMENG && (!jimengAccessKeyId.trim() || !jimengSecretAccessKey.trim())) {
+      setJimengAccessKeyIdInput("");
+      setJimengSecretAccessKeyInput("");
+      setShowApiKeyModal(true);
+      return showToast("请先配置即梦 4.0 Access Key", "error");
     }
     if (!script.trim()) return showToast("请先输入剧本内容！", "error");
     if (status === GenerationStatus.GENERATING) return;
@@ -365,7 +465,7 @@ const App: React.FC = () => {
       const idx = panels.indexOf(targetPanel);
       const prevImage = idx > 0 ? panels[idx - 1].imageUrl : null;
       // 生成 1 张图片
-      const variations = await generatePanelImage(customPrompt || targetPanel.prompt, detectedStyle || "经典漫画", panelChars, prevImage, 1);
+      const variations = await generatePanelImageUnified(customPrompt || targetPanel.prompt, detectedStyle || "经典漫画", panelChars, prevImage, 1, generationMode);
       setPanels(prev => prev.map(p => {
         if (p.id === panelId) {
           return {
@@ -438,25 +538,76 @@ const App: React.FC = () => {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="space-y-4">
+            <div className="space-y-6">
               <div>
-                <label className="text-sm font-bold text-zinc-400 uppercase tracking-wider block mb-2">第三方 API Key</label>
+                <label className="text-sm font-bold text-zinc-400 uppercase tracking-wider block mb-2">Gemini API Key</label>
                 <input
                   type="password"
                   value={apiKeyInput}
                   onChange={(e) => setApiKeyInput(e.target.value)}
-                  placeholder="请输入 API Key"
+                  placeholder="请输入 Gemini API Key"
                   className="w-full bg-zinc-950 border border-zinc-700 rounded-xl p-3 text-white text-sm focus:border-purple-500 outline-none transition-all"
                 />
-                <p className="text-xs text-zinc-500 mt-2">API Key 将存储在本地浏览器中</p>
+                <p className="text-xs text-zinc-500 mt-2">用于分镜分析和图像生成</p>
+              </div>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-sm font-bold text-zinc-400 uppercase tracking-wider block mb-2">即梦 4.0 Access Key ID</label>
+                  <input
+                    type="text"
+                    value={jimengAccessKeyIdInput}
+                    onChange={(e) => setJimengAccessKeyIdInput(e.target.value)}
+                    placeholder="请输入 Access Key ID"
+                    className="w-full bg-zinc-950 border border-zinc-700 rounded-xl p-3 text-white text-sm focus:border-purple-500 outline-none transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-bold text-zinc-400 uppercase tracking-wider block mb-2">即梦 4.0 Secret Access Key</label>
+                  <input
+                    type="password"
+                    value={jimengSecretAccessKeyInput}
+                    onChange={(e) => setJimengSecretAccessKeyInput(e.target.value)}
+                    placeholder="请输入 Secret Access Key"
+                    className="w-full bg-zinc-950 border border-zinc-700 rounded-xl p-3 text-white text-sm focus:border-purple-500 outline-none transition-all"
+                  />
+                  <p className="text-xs text-zinc-500 mt-2">用于图像生成（可选）</p>
+                </div>
+              </div>
+              <div>
+                <label className="text-sm font-bold text-zinc-400 uppercase tracking-wider block mb-3">图像生成方式</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => setGenerationMode(ImageGenerationMode.GEMINI)}
+                    className={`p-4 rounded-xl border-2 transition-all text-left ${
+                      generationMode === ImageGenerationMode.GEMINI
+                        ? 'border-purple-500 bg-purple-500/10'
+                        : 'border-zinc-700 bg-zinc-900 hover:border-zinc-600'
+                    }`}
+                  >
+                    <div className="font-bold text-white mb-1">Gemini</div>
+                    <div className="text-xs text-zinc-500">Google AI 模型</div>
+                  </button>
+                  <button
+                    onClick={() => setGenerationMode(ImageGenerationMode.JIMENG)}
+                    className={`p-4 rounded-xl border-2 transition-all text-left ${
+                      generationMode === ImageGenerationMode.JIMENG
+                        ? 'border-purple-500 bg-purple-500/10'
+                        : 'border-zinc-700 bg-zinc-900 hover:border-zinc-600'
+                    }`}
+                  >
+                    <div className="font-bold text-white mb-1">即梦 4.0</div>
+                    <div className="text-xs text-zinc-500">火山引擎模型</div>
+                  </button>
+                </div>
+                <p className="text-xs text-zinc-500 mt-3">选择用于生成分镜图像的 AI 模型</p>
               </div>
               <div className="flex gap-3">
                 <button onClick={handleSaveApiKey} className="flex-1 py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 rounded-xl font-bold text-white transition-all">
                   保存
                 </button>
-                {apiKey && (
-                  <button onClick={handleClearApiKey} className="py-3 px-6 bg-zinc-800 hover:bg-zinc-700 rounded-xl font-bold text-red-400 transition-all">
-                    清除
+                {(apiKey || jimengAccessKeyId || jimengSecretAccessKey) && (
+                  <button onClick={() => { handleClearApiKey(); handleClearJimengApiKey(); }} className="py-3 px-6 bg-zinc-800 hover:bg-zinc-700 rounded-xl font-bold text-red-400 transition-all">
+                    清除全部
                   </button>
                 )}
               </div>
@@ -488,7 +639,7 @@ const App: React.FC = () => {
               <Zap className="text-yellow-400 fill-yellow-400 w-6 h-6" />
               AI 漫画创作室 <span className="text-purple-500">PRO</span>
             </h1>
-            <button onClick={() => { setApiKeyInput(apiKey); setShowApiKeyModal(true); }} className={`p-2 hover:bg-zinc-800 rounded-lg transition-all flex items-center gap-2 ${apiKey ? 'text-green-400' : 'text-zinc-500 hover:text-white'}`} title="API Key 设置">
+            <button onClick={() => { setApiKeyInput(apiKey); setJimengAccessKeyIdInput(jimengAccessKeyId); setJimengSecretAccessKeyInput(jimengSecretAccessKey); setShowApiKeyModal(true); }} className={`p-2 hover:bg-zinc-800 rounded-lg transition-all flex items-center gap-2 ${apiKey ? 'text-green-400' : 'text-zinc-500 hover:text-white'}`} title="API Key 设置">
               <Settings className="w-5 h-5" />
             </button>
           </div>
@@ -676,8 +827,14 @@ const App: React.FC = () => {
 
         <footer className="h-12 border-t border-zinc-900 bg-zinc-950 flex items-center justify-between px-8">
           <div className="flex items-center gap-4 text-[10px] font-bold uppercase tracking-widest text-zinc-600">
-            <span className="flex items-center gap-2"><div className={`w-2 h-2 rounded-full ${apiKey ? 'bg-green-500' : 'bg-red-500'}`} />API: {apiKey ? '已配置' : '未配置'}</span>
-            <span className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-500" />模型: GEMINI 2.5 FLASH IMAGE</span>
+            <span className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${apiKey ? 'bg-green-500' : 'bg-red-500'}`} />
+              API: {apiKey ? '已配置' : '未配置'}
+            </span>
+            <span className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${generationMode === ImageGenerationMode.JIMENG ? 'bg-orange-500' : 'bg-blue-500'}`} />
+              模型: {generationMode === ImageGenerationMode.JIMENG ? '即梦 4.0' : 'GEMINI 2.5 FLASH IMAGE'}
+            </span>
           </div>
           <div className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest">AI COMIC STUDIO PRO • CREATIVE TOOL</div>
         </footer>

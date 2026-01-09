@@ -27,10 +27,16 @@ export enum GenerationStatus {
   PAUSED = 'paused'
 }
 
+export enum ImageGenerationMode {
+  GEMINI = 'gemini',
+  JIMENG = 'jimeng'
+}
+
 export interface ProjectState {
   characters: Character[];
   panels: Panel[];
   script: string;
   frameCount: number;
   detectedStyle: string;
+  generationMode?: ImageGenerationMode;
 }
