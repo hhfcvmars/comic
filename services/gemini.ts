@@ -1,5 +1,5 @@
 
-import { Character, Panel } from "../types";
+import { Character, Panel, AspectRatio } from "../types";
 
 const BASE_URL = "https://yibuapi.com/v1beta/models";
 
@@ -202,12 +202,13 @@ export async function generatePanelImageUnified(
   contextImage: string | null = null,
   batchSize: number = 2,
   mode: 'gemini' | 'jimeng' = 'gemini',
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  aspectRatio: AspectRatio = '1:1'
 ): Promise<string[]> {
   // 动态导入即梦服务，避免未使用时的加载
   if (mode === 'jimeng') {
     const { generatePanelImageWithJimeng } = await import('./jimeng');
-    return generatePanelImageWithJimeng(prompt, style, characters, contextImage, batchSize, 0.5, signal);
+    return generatePanelImageWithJimeng(prompt, style, characters, contextImage, batchSize, 0.5, signal, aspectRatio);
   } else {
     return generatePanelImage(prompt, style, characters, contextImage, batchSize, signal);
   }

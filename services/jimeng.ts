@@ -12,7 +12,7 @@
  * 2. 查询任务 (CVSync2AsyncGetResult) - 使用 task_id 查询结果
  */
 
-import { Character } from "../types";
+import { Character, AspectRatio } from "../types";
 import { uploadBase64ToQiniu } from "./qiniu";
 
 // 即梦 4.0 API 配置
@@ -359,6 +359,7 @@ function isUrl(str: string): boolean {
 async function submitJimengTask(prompt: string, options: {
   width?: number;
   height?: number;
+  aspectRatio?: AspectRatio;
   seed?: number;
   image_urls?: string[]; // 图片URL数组，用于以图生图
   scale?: number; // 修改程度，0-1之间，默认0.5
@@ -373,9 +374,28 @@ async function submitJimengTask(prompt: string, options: {
     }
   };
   
-  // 统一的图片尺寸：1024x1024 正方形
-  const imageWidth = options.width || 1024;
-  const imageHeight = options.height || 1024;
+  // 默认尺寸
+  let imageWidth = options.width || 1024;
+  let imageHeight = options.height || 1024;
+
+  // 如果指定了宽高比，覆盖 width/height
+  if (options.aspectRatio) {
+    switch (options.aspectRatio) {
+      case '16:9':
+        imageWidth = 2560;
+        imageHeight = 1440;
+        break;
+      case '9:16':
+        imageWidth = 1440;
+        imageHeight = 2560;
+        break;
+      case '1:1':
+      default:
+        imageWidth = 1024;
+        imageHeight = 1024;
+        break;
+    }
+  }
   
   // 如果传入了 image_urls，使用以图生图模式
   if (options.image_urls && options.image_urls.length > 0) {
@@ -545,7 +565,8 @@ export async function generatePanelImageWithJimeng(
   contextImage: string | null = null,
   batchSize: number = 1,
   scale: number = 0.5, // 以图生图时的修改程度，默认0.5
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  aspectRatio: AspectRatio = '1:1'
 ): Promise<string[]> {
   const bg = characters.length > 0 ? "纯白背景, 极简环境" : "精细真实环境场景";
 
@@ -660,8 +681,7 @@ export async function generatePanelImageWithJimeng(
         taskId = await submitJimengTask(fullPrompt, {
           image_urls: imageUrls,
           scale: scale,
-          width: 1024,
-          height: 1024,
+          aspectRatio: aspectRatio,
           signal
         });
       } else {
@@ -669,8 +689,7 @@ export async function generatePanelImageWithJimeng(
         console.log(`========== 即梦任务 ${index + 1} 使用文生图模式 ==========`);
         console.log("注意：没有收集到任何参考图片，将使用文生图模式");
         taskId = await submitJimengTask(fullPrompt, {
-          width: 1024,
-          height: 1024,
+          aspectRatio: aspectRatio,
           seed: Math.floor(Math.random() * 999999),
           signal
         });

@@ -32,6 +32,8 @@ export enum ImageGenerationMode {
   JIMENG = 'jimeng'
 }
 
+export type AspectRatio = '1:1' | '16:9' | '9:16';
+
 export interface ProjectState {
   characters: Character[];
   panels: Panel[];
@@ -39,4 +41,5 @@ export interface ProjectState {
   frameCount: number;
   detectedStyle: string;
   generationMode?: ImageGenerationMode;
+  aspectRatio?: AspectRatio;
 }
