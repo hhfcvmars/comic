@@ -135,77 +135,7 @@ const App: React.FC = () => {
 
   // 本地存储持久化 - 读取
   useEffect(() => {
-    const saved = localStorage.getItem('comic_studio_zh_v1');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (parsed) {
-          setScript(parsed.script || "");
-          setFrameCount(parsed.frameCount || 5);
-          setDetectedStyle(parsed.detectedStyle || "");
-          if (Array.isArray(parsed.characters)) {
-            // 检查是否有base64格式的图片需要上传到七牛云
-            const charactersWithBase64 = parsed.characters.filter((char: Character) => 
-              char.referenceImage && !isUrl(char.referenceImage)
-            );
-            
-            // 先设置角色数据
-            setCharacters(parsed.characters);
-            
-            // 如果有base64格式的图片，异步上传到七牛云
-            if (charactersWithBase64.length > 0) {
-              // 延迟显示提示，避免在组件初始化时立即显示
-              setTimeout(() => {
-                showToast(`检测到 ${charactersWithBase64.length} 个角色图片，正在上传到七牛云...`, "info");
-              }, 500);
-              
-              // 异步上传base64图片到七牛云
-              Promise.all(
-                charactersWithBase64.map(async (char: Character) => {
-                  try {
-                    if (char.referenceImage && !isUrl(char.referenceImage)) {
-                      const imageUrl = await uploadBase64ToQiniu(char.referenceImage, `${char.name || 'character'}.png`);
-                      return { id: char.id, imageUrl };
-                    }
-                    return null;
-                  } catch (error) {
-                    console.error(`上传角色 ${char.name} 的图片失败:`, error);
-                    return null;
-                  }
-                })
-              ).then((uploadResults) => {
-                // 更新成功上传的角色图片
-                setCharacters(prev => prev.map((char: Character) => {
-                  const result = uploadResults.find((r) => r && r.id === char.id);
-                  if (result && result.imageUrl) {
-                    return { ...char, referenceImage: result.imageUrl };
-                  }
-                  return char;
-                }));
-                
-                const successCount = uploadResults.filter(r => r !== null).length;
-                if (successCount > 0) {
-                  showToast(`${successCount} 个角色图片已上传到七牛云`, "success");
-                }
-              }).catch((error) => {
-                console.error("批量上传角色图片失败:", error);
-                showToast("部分角色图片上传失败", "error");
-              });
-            }
-          }
-          if (Array.isArray(parsed.panels)) {
-            setPanels(parsed.panels);
-            const hasIncomplete = parsed.panels.some((p: Panel) => !p.imageUrl);
-            if (hasIncomplete && parsed.panels.length > 0) {
-              setStatus(GenerationStatus.PAUSED);
-              setLastError({ message: "上次生成未完成，可继续生成", canResume: true });
-            }
-          }
-        }
-      } catch (e) {
-        console.error("无法加载存档数据", e);
-      }
-    }
+    // 页面刷新时不恢复之前的生成任务（comic_studio_zh_v1），只恢复配置项
     const savedApiKey = localStorage.getItem('comic_api_key');
     if (savedApiKey) setApiKey(savedApiKey);
     const savedJimengAccessKeyId = localStorage.getItem('jimeng_access_key_id');
@@ -555,13 +485,47 @@ const App: React.FC = () => {
     }
   };
 
-  const downloadSinglePanel = (panel: Panel) => {
+  const downloadSinglePanel = async (panel: Panel) => {
     if (!panel.imageUrl) return;
-    const link = document.createElement('a');
-    link.href = panel.imageUrl;
-    link.download = `Panel_${panel.index}.png`;
-    link.click();
-    showToast(`分镜 #${panel.index} 已开始下载`, "success");
+    
+    try {
+      showToast(`正在准备下载分镜 #${panel.index}...`, "info");
+      
+      let downloadUrl = panel.imageUrl;
+      let extension = "png";
+
+      if (panel.imageUrl.startsWith('http')) {
+        const response = await fetch(panel.imageUrl, { mode: 'cors' });
+        if (!response.ok) throw new Error(`下载失败: ${response.status}`);
+        const blob = await response.blob();
+        downloadUrl = URL.createObjectURL(blob);
+        
+        if (blob.type === "image/jpeg") extension = "jpg";
+        else if (blob.type === "image/webp") extension = "webp";
+      } else if (panel.imageUrl.startsWith('data:image')) {
+         const header = panel.imageUrl.split(';')[0];
+         if (header.includes('jpeg')) extension = "jpg";
+         else if (header.includes('webp')) extension = "webp";
+      }
+
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = `Panel_${panel.index}.${extension}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      if (downloadUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(downloadUrl);
+      }
+      
+      showToast(`分镜 #${panel.index} 下载成功`, "success");
+    } catch (error) {
+      console.error("下载图片失败:", error);
+      showToast("下载图片失败，尝试直接打开", "error");
+      // 降级处理：如果 fetch 失败，尝试直接打开
+      window.open(panel.imageUrl, '_blank');
+    }
   };
 
   const exportZip = async () => {
